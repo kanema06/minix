@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,11 +9,15 @@ int total_directorios = 0;
 int es_rama_ultima[1024];
 
 void inspeccionar(const char *ruta_actual, int nivel, int rama_es_ultima) {
-    DIR *flujo_dir = opendir(ruta_actual);
-    if (!flujo_dir) return;
-
+    DIR *flujo_dir;
     struct dirent *entrada;
     struct dirent *proxima_entrada;
+    char ruta_completa[1024];
+    struct stat info_archivo;
+    int i;
+    
+    flujo_dir = opendir(ruta_actual);
+    if (flujo_dir == NULL) return;
 
     entrada = readdir(flujo_dir);
     while (entrada != NULL) {
@@ -23,7 +26,7 @@ void inspeccionar(const char *ruta_actual, int nivel, int rama_es_ultima) {
             continue;
         }
 
-        for (int i = 0; i < nivel; i++) {
+        for (i = 0; i < nivel; i++) {
             if (es_rama_ultima[i])
                 printf("     ");
             else
@@ -38,12 +41,10 @@ void inspeccionar(const char *ruta_actual, int nivel, int rama_es_ultima) {
 
         es_rama_ultima[nivel] = (proxima_entrada == NULL);
 
-        char ruta_completa[1024];
-        snprintf(ruta_completa, sizeof(ruta_completa), "%s/%s", ruta_actual, entrada->d_name);
+        sprintf(ruta_completa, "%s/%s", ruta_actual, entrada->d_name);
 
-        struct stat info_archivo;
         if (lstat(ruta_completa, &info_archivo) == 0) {
-            if (S_ISDIR(info_archivo.st_mode)) {
+            if (info_archivo.st_mode & S_IFDIR) {
                 total_directorios++;
                 inspeccionar(ruta_completa, nivel + 1, proxima_entrada == NULL);
             } else {
