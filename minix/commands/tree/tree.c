@@ -1,82 +1,76 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <errno.h>
 
-int files_count = 0;
-int dir_count = 0;
+int total_archivos = 0;
+int total_directorios = 0;
+int es_rama_ultima[1024];
 
-int alpha_sort(const struct dirent **a, const struct dirent **b) {
-    return strcoll((*a)->d_name, (*b)->d_name);
-}
+void inspeccionar(const char *ruta_actual, int nivel, int rama_es_ultima) {
+    DIR *flujo_dir = opendir(ruta_actual);
+    if (!flujo_dir) return;
 
-void rtree(const char *path, int depth, int *last) {
-    DIR *dir = opendir(path);
-    if (!dir) {
-        fprintf(stderr, "tree: cannot open '%s': %s\n", path, strerror(errno));
-        return;
-    }
+    struct dirent *entrada;
+    struct dirent *proxima_entrada;
 
-    struct dirent **entries;
-    int n = scandir(path, &entries, NULL, alpha_sort);
-    if (n < 0) {
-        closedir(dir);
-        fprintf(stderr, "tree: scandir failed '%s': %s\n", path, strerror(errno));
-        return;
-    }
-
-    for (int i = 0; i < n; i++) {
-        struct dirent *entry = entries[i];
-        if (entry->d_name[0] == '.') {
-            free(entry);
+    entrada = readdir(flujo_dir);
+    while (entrada != NULL) {
+        if (entrada->d_name[0] == '.') {
+            entrada = readdir(flujo_dir);
             continue;
         }
 
-        char fullpath[1024];
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", path, entry->d_name);
-
-        int is_last = (i == n - 1);
-
-        for (int j = 0; j < depth; j++) {
-            if (last[j])
-                printf("    ");
+        for (int i = 0; i < nivel; i++) {
+            if (es_rama_ultima[i])
+                printf("     ");
             else
-                printf("|   ");
+                printf("|    ");
         }
-        printf("%s-- %s\n", is_last ? "`" : "|", entry->d_name);
 
-        struct stat st;
-        if (lstat(fullpath, &st) == 0 && S_ISDIR(st.st_mode)) {
-            dir_count++;
-            last[depth] = is_last; 
-            rtree(fullpath, depth + 1, last);
+        proxima_entrada = readdir(flujo_dir);
+        if (proxima_entrada == NULL)
+            printf("`-- %s\n", entrada->d_name);
+        else
+            printf("|-- %s\n", entrada->d_name);
+
+        es_rama_ultima[nivel] = (proxima_entrada == NULL);
+
+        char ruta_completa[1024];
+        snprintf(ruta_completa, sizeof(ruta_completa), "%s/%s", ruta_actual, entrada->d_name);
+
+        struct stat info_archivo;
+        if (lstat(ruta_completa, &info_archivo) == 0) {
+            if (S_ISDIR(info_archivo.st_mode)) {
+                total_directorios++;
+                inspeccionar(ruta_completa, nivel + 1, proxima_entrada == NULL);
+            } else {
+                total_archivos++;
+            }
         } else {
-            files_count++;
+            total_archivos++;
         }
 
-        free(entry);
+        entrada = proxima_entrada;
     }
-    free(entries);
-    closedir(dir);
+
+    closedir(flujo_dir);
 }
 
-void tree(const char *path) {
-    files_count = 0;
-    dir_count = 0;
+void construir_arbol(const char *punto_partida) {
+    total_archivos = 0;
+    total_directorios = 0;
 
-    printf("%s\n", path);
-    int last[1024] = {0};
-    rtree(path, 0, last);
+    printf("%s\n", punto_partida);
+    inspeccionar(punto_partida, 0, 1);
 
-    printf("\n%d directory%s, %d file%s\n",
-           dir_count + 1, (dir_count + 1 == 1) ? "" : "s",
-           files_count, (files_count == 1) ? "" : "s");
+    printf("\n%d directories, %d files\n", total_directorios + 1, total_archivos);
 }
 
 int main(int argc, char *argv[]) {
-    const char *path = (argc > 1) ? argv[1] : ".";
-    tree(path);
+    const char *ruta = (argc > 1) ? argv[1] : ".";
+    construir_arbol(ruta);
     return 0;
 }
