@@ -95,12 +95,14 @@ int do_noquantum(message *m_ptr)
 		return EBADEPT;
 	}
 
-	rmp = &schedproc[proc_nr_n];
-	rmp->count++;
-	if ((rv = schedule_process_local(rmp)) != OK) {
-		return rv;
-	}
-	return OK;
+    rmp = &schedproc[proc_nr_n];
+
+    rmp->cpu_heavy_count++; 
+
+    if ((rv = schedule_process_local(rmp)) != OK) {
+        return rv;
+    }
+    return OK;
 }
 
 /*===========================================================================*
@@ -161,7 +163,6 @@ int do_start_scheduling(message *m_ptr)
 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
 		return EINVAL;
 	}
-	rmp->count = 0;
 
 	/* Inherit current priority and time slice from parent. Since there
 	 * is currently only one scheduler scheduling the whole system, this
@@ -355,14 +356,14 @@ void balance_queues(void)
 
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
 		if (rmp->flags & IN_USE) {
-			if (rmp->count >= 3) {
+			if (rmp->cpu_heavy_count >= 3) {
                 if (rmp->priority < MIN_USER_Q) rmp->priority++;
             } 
-            else if (rmp->count == 0) {
+            else if (rmp->cpu_heavy_count == 0) {
                 if (rmp->priority > rmp->max_priority) rmp->priority--;
             }
 
-            rmp->count = 0; /* Reiniciar ventana */
+            rmp->cpu_heavy_count = 0; /* Reiniciar ventana */
             schedule_process_local(rmp);
 		}
 	}
@@ -370,4 +371,3 @@ void balance_queues(void)
 	if ((r = sys_setalarm(balance_timeout, 0)) != OK)
 		panic("sys_setalarm failed: %d", r);
 }
-	
