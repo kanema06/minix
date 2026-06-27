@@ -161,6 +161,7 @@ int do_start_scheduling(message *m_ptr)
 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
 		return EINVAL;
 	}
+	rmp->count = 0;
 
 	/* Inherit current priority and time slice from parent. Since there
 	 * is currently only one scheduler scheduling the whole system, this
@@ -354,27 +355,19 @@ void balance_queues(void)
 
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
 		if (rmp->flags & IN_USE) {
-			
-            if(rmp->count>=3)
-            {
-                if(rmp->priority<MIN_USER_Q)
-                {
-                    rmp->priority+=1;
-                }
+			if (rmp->count >= 3) {
+                if (rmp->priority < MIN_USER_Q) rmp->priority++;
+            } 
+            else if (rmp->count == 0) {
+                if (rmp->priority > rmp->max_priority) rmp->priority--;
             }
-            else if (rmp->count==0)
-            {
-                if(rmp->priority>rmp->max_priority)
-                {
-                    rmp->priority-=1;
-                }
-            }
-            rmp->count=0;
-            schedule_process_local(rmp);
 
+            rmp->count = 0; /* Reiniciar ventana */
+            schedule_process_local(rmp);
 		}
 	}
 
 	if ((r = sys_setalarm(balance_timeout, 0)) != OK)
 		panic("sys_setalarm failed: %d", r);
 }
+	
