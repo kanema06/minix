@@ -1,190 +1,130 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <string.h>
+#include <termios.h>
+#include <unistd.h>
+#include <minix/input.h>
 
-
-#define MOUSE_DEV       "/dev/mouse0"
-
-#define SCR_COLS        80    
-#define SCR_ROWS        25     
-
-#define CURSOR_CH       '+'   
-#define BRUSH_CH        '*'   
-#define ERASER_CH       ' '  
-
-#define LEFT_BTN_MASK   0x01
-#define RIGHT_BTN_MASK  0x02
-#define XSIGN_MASK      0x10
-#define YSIGN_MASK      0x20
+#define SCREEN_W 80
+#define SCREEN_H 24
 
 typedef struct {
-    int dx;     
-    int dy;     
-    int left;  
-    int right;  
-} mouse_event_t;
+    int x;
+    int y;
+} point_t;
 
+static char grid[SCREEN_H][SCREEN_W];
+static point_t pos;
+static int left_down;
+static int right_down;
+static struct termios term_backup;
 
-static int  mouse_fd = -1;              
-static char screen[SCR_ROWS][SCR_COLS]; 
-static int  cur_col, cur_row;             
-
-static void move_to(int row, int col)
+static void move_cursor(int row, int col)
 {
-    char seq[16];
-    int  len = snprintf(seq, sizeof(seq), "\033[%d;%dH", row + 1, col + 1);
-    write(STDOUT_FILENO, seq, (size_t) len);
+    printf("\033[%d;%dH", row + 1, col + 1);
 }
 
-static void clear_screen(void)
+static int clamp(int value, int low, int high)
 {
-    write(STDOUT_FILENO, "\033[2J", 4);
+    if (value < low)
+        return low;
+    if (value > high)
+        return high;
+    return value;
 }
 
-static void paint_cell(int row, int col, char ch)
+static void enable_raw_mode(void)
 {
-    screen[row][col] = ch;
-    move_to(row, col);
-    write(STDOUT_FILENO, &ch, 1);
+    struct termios raw;
+
+    tcgetattr(STDIN_FILENO, &term_backup);
+    raw = term_backup;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 }
 
-static void restore_cell(int row, int col)
+static void on_exit_signal(int signo)
 {
-    move_to(row, col);
-    write(STDOUT_FILENO, &screen[row][col], 1);
+    (void)signo;
+    printf("\033[?25h\033[2J\033[H");
+    fflush(stdout);
+    tcsetattr(STDIN_FILENO, TCSANOW, &term_backup);
+    _exit(0);
 }
 
-static void draw_cursor_glyph(int row, int col)
+static void handle_button_event(const struct input_event *ev)
 {
-    char ch = CURSOR_CH;
-    move_to(row, col);
-    write(STDOUT_FILENO, &ch, 1);
+    if (ev->code == INPUT_BUTTON_1)
+        left_down = ev->value;
+    else if (ev->code == INPUT_BUTTON_1 + 1)
+        right_down = ev->value;
 }
 
-static void paint_segment(int x0, int y0, int x1, int y1, char ch)
+static void handle_motion_event(const struct input_event *ev)
 {
-    int dx = abs(x1 - x0);
-    int dy = abs(y1 - y0);
-    int sx = (x1 >= x0) ? 1 : -1;
-    int sy = (y1 >= y0) ? 1 : -1;
-    int err = dx - dy;
-    int x = x0, y = y0;
+    int new_x = pos.x;
+    int new_y = pos.y;
 
-    for (;;) {
-        paint_cell(y, x, ch);
+    if (ev->code == INPUT_GD_X)
+        new_x += ev->value;
+    else if (ev->code == INPUT_GD_Y)
+        new_y -= ev->value;
 
-        if (x == x1 && y == y1)
-            break;
+    new_x = clamp(new_x, 0, SCREEN_W - 1);
+    new_y = clamp(new_y, 0, SCREEN_H - 1);
 
-        int e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; x += sx; }
-        if (e2 <  dx) { err += dx; y += sy; }
-    }
-}
+    if (new_x == pos.x && new_y == pos.y)
+        return;
 
-static int read_mouse_event(mouse_event_t *ev)
-{
-    static unsigned char buf[3];
-    static int filled = 0;
+    /* repintar la celda que el cursor deja atras */
+    move_cursor(pos.y, pos.x);
+    putchar(grid[pos.y][pos.x]);
 
- 
-    while (filled < 3) {
-        ssize_t n = read(mouse_fd, buf + filled, 3 - filled);
+    pos.x = new_x;
+    pos.y = new_y;
 
-        if (n == 0)
-            return 0;         
-        if (n < 0)
-            return -1;         
+    if (left_down)
+        grid[pos.y][pos.x] = '#';
+    if (right_down)
+        grid[pos.y][pos.x] = ' ';
 
-        filled += (int) n;
-    }
-    filled = 0; 
-
-    ev->left  = (buf[0] & LEFT_BTN_MASK)  ? 1 : 0;
-    ev->right = (buf[0] & RIGHT_BTN_MASK) ? 1 : 0;
-
-    int dx = buf[1];
-    int dy = buf[2];
-    if (buf[0] & XSIGN_MASK) dx -= 256;  /* completa el signo de X */
-    if (buf[0] & YSIGN_MASK) dy -= 256;  /* completa el signo de Y */
-
-    ev->dx =  dx;
-    ev->dy = -dy;
-
-    return 1;
-}
-
-static void cleanup_and_exit(int status)
-{
-    move_to(SCR_ROWS - 1, 0);
-    write(STDOUT_FILENO, "\n", 1);
-
-    if (mouse_fd >= 0)
-        close(mouse_fd);
-
-    _exit(status); 
-}
-
-static void on_sigint(int signo)
-{
-    (void) signo;
-    cleanup_and_exit(0);
+    move_cursor(pos.y, pos.x);
+    putchar('+');
+    fflush(stdout);
 }
 
 int main(void)
 {
-    memset(screen, ' ', sizeof(screen));
+    int mouse_fd;
+    struct input_event ev;
 
-    mouse_fd = open(MOUSE_DEV, O_RDONLY);
+    mouse_fd = open("/dev/mouse0", O_RDONLY);
     if (mouse_fd < 0) {
-        perror("paint: no se pudo abrir " MOUSE_DEV);
+        perror("/dev/mouse0");
         return 1;
     }
 
-    signal(SIGINT, on_sigint);
+    enable_raw_mode();
+    signal(SIGINT, on_exit_signal);
 
-    clear_screen();
+    memset(grid, ' ', sizeof(grid));
+    printf("\033[2J\033[?25l");
 
-    cur_col = SCR_COLS / 2;
-    cur_row = SCR_ROWS / 2;
-    draw_cursor_glyph(cur_row, cur_col);
+    pos.x = SCREEN_W / 2;
+    pos.y = SCREEN_H / 2;
+    move_cursor(pos.y, pos.x);
+    putchar('+');
+    fflush(stdout);
 
-    for (;;) {
-        mouse_event_t ev;
-        int r = read_mouse_event(&ev);
-
-        if (r == 0)
-            break;
-        if (r < 0) {
-            perror("paint: error leyendo " MOUSE_DEV);
-            break;
-        }
-
-        int old_col = cur_col;
-        int old_row = cur_row;
-
-        cur_col += ev.dx;
-        cur_row += ev.dy;
-
-        if (cur_col < 0)            cur_col = 0;
-        if (cur_col >= SCR_COLS)    cur_col = SCR_COLS - 1;
-        if (cur_row < 0)            cur_row = 0;
-        if (cur_row >= SCR_ROWS)    cur_row = SCR_ROWS - 1;
-
-        if (ev.left) {
-            paint_segment(old_col, old_row, cur_col, cur_row, BRUSH_CH);
-        } else if (ev.right) {
-            paint_segment(old_col, old_row, cur_col, cur_row, ERASER_CH);
-        } else {
-            restore_cell(old_row, old_col);
-        }
-
-        draw_cursor_glyph(cur_row, cur_col);
+    while (read(mouse_fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+        if (ev.page == INPUT_PAGE_BUTTON)
+            handle_button_event(&ev);
+        else if (ev.page == INPUT_PAGE_GD)
+            handle_motion_event(&ev);
     }
 
-    cleanup_and_exit(0);
-    return 0; 
+    close(mouse_fd);
+    on_exit_signal(0);
+    return 0;
 }
